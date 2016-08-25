@@ -46,3 +46,13 @@ void setSamplingPoints(float *samplingPoints, int numOfPoints, int dimensions){
 	return;	
 }
 
+void setSamplingPointDensity(float *density, int numOfPoints){
+	if (numOfPoints < 1)
+		return;
+	for (int i = 0; i < numOfPoints; i++){
+
+		*(density + i) = 1 / numOfPoints;
+	}
+	return;
+}
+
