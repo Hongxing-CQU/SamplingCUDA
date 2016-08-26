@@ -16,7 +16,7 @@ typedef struct {
 	int stride;
 	float *elements;
 } Matrix_;
-
+#define IDX2C(i,j,ld) (((j)*(ld))+(i));
 
 cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size);
 // cudaError_t multiMatriWithCuda(float *c, float *a, float *b, int widthA, int heightA, int widthB, int heightB,);
@@ -276,7 +276,7 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 
 	float *h_distanceMatrix;
 	float *h_kasaiMatrix; // 距离矩阵的高斯函数
-	float *h_transportPlan = (float *)malloc(dimsA.x * dimsB.x * sizeof(float));
+	float *h_transportPlan;// = (float *)malloc(dimsA.x * dimsB.x * sizeof(float));
 
 	// allocate device memory 
 	float *d_A, *d_B, *d_distanceMatrix, *d_kasaiMatrix, *d_transportPlan, *d_U, *d_V; // device memory中的变量，其中d_U, d_V 为中间变量
@@ -294,7 +294,6 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 		exit(EXIT_FAILURE);
 	}
 	
-
 	error = cudaMalloc((void**)&d_A, mem_sizeA);
 
 	if (error != cudaSuccess){
@@ -363,6 +362,11 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 		exit(EXIT_FAILURE);
 	}
 
+	error = cudaMalloc((void**)&d_transportPlan, mem_sizeTransportMatrix);
+	if (error != cudaSuccess){
+		printf("cudaMalloc d_transportPlan returned error %s(code %d), line(%d)\n", cudaGetErrorString(error), error, __LINE__);
+		exit(EXIT_FAILURE);
+	}
 	// copy host memory to device
 	error = cudaMemcpy(d_A, h_A, mem_sizeA, cudaMemcpyHostToDevice);
 	if (error != cudaSuccess){
@@ -623,8 +627,54 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 	free(check_V);
 
 	///计算传输计划矩阵
+	// 由于cublasSdgmm函数对矩阵没有op操作，可以做个相当于转置的计算， A= BCD   AT = DT CT BT (T表示转置)特别小心
+	cublasSdgmm(handle, CUBLAS_SIDE_LEFT, size_originalPoint, size_samplingPoint, d_kasaiMatrix, size_originalPoint, d_V, 1, d_diagUKasaiMatrix, size_originalPoint);
+	cublasSdgmm(handle, CUBLAS_SIDE_RIGHT, size_originalPoint, size_samplingPoint, d_diagUKasaiMatrix, size_originalPoint, d_U, 1, d_transportPlan, size_originalPoint);
 
-	// cublasSdgmm
+	// 核对正确性
+
+	h_transportPlan = (float *)malloc(mem_sizeTransportMatrix);
+	
+	error = cudaMemcpy(h_transportPlan, d_transportPlan, mem_sizeTransportMatrix, cudaMemcpyDeviceToHost);
+	if (error != cudaSuccess){
+		printf("cudaMemcpy (h_transportPlan, d_transportPlan) returned error %s (code %d), line(%d)\n", cudaGetErrorString(error), error, __LINE__);
+		exit(EXIT_FAILURE);
+	}
+
+	float *check_transportPlan = (float *)malloc(mem_sizeTransportMatrix);
+	float *ch_transportPlan = (float *)malloc(mem_sizeTransportMatrix);
+	for (int i = 0; i < size_samplingPoint; i++){
+		for (int j = 0; j < size_originalPoint; j++){
+			ch_transportPlan[i*size_originalPoint + j] = h_U[i] * h_kasaiMatrix[i*size_originalPoint + j];
+		}
+	}
+	for (int i = 0; i < size_samplingPoint; i++){
+		for (int j = 0; j < size_originalPoint; j++){
+			check_transportPlan[i*size_originalPoint + j] = ch_transportPlan[i*size_originalPoint + j] * h_V[j];
+		}
+	}
+
+	printf("Transport plan matrix: GPU\n");
+	for (int i = 0; i < size_samplingPoint; i++){
+		for (int j = 0; j < size_originalPoint; j++){
+			printf("  %f  ", h_transportPlan[i*size_originalPoint + j]);
+		}
+		printf("\n");
+	}
+
+
+	printf("Transport plan matrix: CPU\n");
+	for (int i = 0; i < size_samplingPoint; i++){
+		for (int j = 0; j < size_originalPoint; j++){
+			printf("  %f  ", check_transportPlan[i*size_originalPoint + j]);
+		}
+		printf("\n");
+	}
+
+	free(check_transportPlan);
+	free(ch_transportPlan);
+
+
 
 	// CUBLAS handle
 	
@@ -632,8 +682,7 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 	if (stat != CUBLAS_STATUS_SUCCESS){
 		printf("cublasDestroy failed\n");
 		exit(EXIT_FAILURE);
-	}
-	
+	}	
 
 	// Record the stop event
 	error = cudaEventRecord(stop, NULL);
