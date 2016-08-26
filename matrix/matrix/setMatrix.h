@@ -51,7 +51,7 @@ void setSamplingPointDensity(float *density, int numOfPoints){
 		return;
 	for (int i = 0; i < numOfPoints; i++){
 
-		*(density + i) = 1 / numOfPoints;
+		*(density + i) = (float) 1 / numOfPoints;
 	}
 	return;
 }

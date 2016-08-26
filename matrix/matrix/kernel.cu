@@ -282,6 +282,7 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 	float *d_A, *d_B, *d_distanceMatrix, *d_kasaiMatrix, *d_transportPlan, *d_U, *d_V; // device memory中的变量，其中d_U, d_V 为中间变量
 	float *d_kasaiV, *d_kasaiU;
 	float *d_samplingPointDensity, *d_originalPointDensity;
+	float *d_diagUKasaiMatrix; /// 临时变量
 	cublasHandle_t handle;
 	cublasStatus_t stat;
 	cudaError_t error;
@@ -356,6 +357,12 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 		exit(EXIT_FAILURE);
 	}
 
+	error = cudaMalloc((void**)&d_diagUKasaiMatrix, mem_sizeTransportMatrix);
+	if (error != cudaSuccess){
+		printf("cudaMalloc d_diagUKasaiMatrix returned error %s(code %d), line(%d)\n", cudaGetErrorString(error), error, __LINE__);
+		exit(EXIT_FAILURE);
+	}
+
 	// copy host memory to device
 	error = cudaMemcpy(d_A, h_A, mem_sizeA, cudaMemcpyHostToDevice);
 	if (error != cudaSuccess){
@@ -386,6 +393,7 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 		printf("cudaMemcpy (d_originalPointDensity, h_originalPointDensity) returned error %s (code %d), line(%d)\n", cudaGetErrorString(error), error, __LINE__);
 		exit(EXIT_FAILURE);
 	}
+
    // 设置event
 	cudaEvent_t start;
 	error = cudaEventCreate(&start);
@@ -394,7 +402,6 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 		fprintf(stderr, "Failed to create start event (error code %s)!\n", cudaGetErrorString(error));
 		exit(EXIT_FAILURE);
 	}
-
 	cudaEvent_t stop;
 	error = cudaEventCreate(&stop);
 
@@ -498,7 +505,26 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 			printf("cublasSdot failed\n");
 			exit(EXIT_FAILURE);
 		}
-
+		
+		threads.x = 2; //block_size;
+		threads.y = 1;
+		threads.z = 1;
+		grid.x = size_samplingPoint / threads.x;
+		grid.y = 1;
+		grid.z = 1;
+		elementWiseDIV<2> << <grid, threads >> >(d_U, d_samplingPointDensity, d_kasaiV);
+		stat = cublasSgemv(handle, CUBLAS_OP_N, size_originalPoint, size_samplingPoint, &alpha, d_kasaiMatrix, size_originalPoint, d_U, 1, &beta, d_kasaiU, 1);
+		if (stat != CUBLAS_STATUS_SUCCESS){
+			printf("cublasSdot failed\n");
+			exit(EXIT_FAILURE);
+		}
+		threads.x = block_size;
+		threads.y = 1;
+		threads.z = 1;
+		grid.x = size_originalPoint / threads.x;
+		grid.y = 1;
+		grid.z = 1;
+		elementWiseDIV<4> << <grid, threads >> >(d_V, d_originalPointDensity, d_kasaiU);
 	}
 	
 	float *h_kasaiV = (float *)malloc(size_samplingPoint);
@@ -507,8 +533,30 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 		printf("cudaMemcpy (h_kasaiV, d_kasaiV) returned error %s (code %d), line(%d)\n", cudaGetErrorString(error), error, __LINE__);
 		exit(EXIT_FAILURE);
 	}
+	
+	float *h_U = (float *)malloc(mem_sizeSamplingPoint);
+	error = cudaMemcpy(h_U, d_U, mem_sizeSamplingPoint, cudaMemcpyDeviceToHost);
+	if (error != cudaSuccess){
+		printf("cudaMemcpy (h_U, d_U) returned error %s (code %d), line(%d)\n", cudaGetErrorString(error), error, __LINE__);
+		exit(EXIT_FAILURE);
+	}
 
-	float *check_kasaiV = (float *)malloc(size_samplingPoint);
+	float *h_kasaiU = (float *)malloc(mem_sizeOriginalPoint);
+	error = cudaMemcpy(h_kasaiU, d_kasaiU, mem_sizeOriginalPoint, cudaMemcpyDeviceToHost);
+	if (error != cudaSuccess){
+		printf("cudaMemcpy (h_kasaiU, d_kasaiU) returned error %s (code %d), line(%d)\n", cudaGetErrorString(error), error, __LINE__);
+		exit(EXIT_FAILURE);
+	}
+
+	error = cudaMemcpy(h_V, d_V, mem_sizeOriginalPoint, cudaMemcpyDeviceToHost);
+	if (error != cudaSuccess){
+		printf("cudaMemcpy (h_V, d_V) returned error %s (code %d), line(%d)\n", cudaGetErrorString(error), error, __LINE__);
+		exit(EXIT_FAILURE);
+	}
+	
+
+	// 检查正确性
+	float *check_kasaiV = (float *)malloc(mem_sizeSamplingPoint);
 	printf("kasaiV vector: GPU  CPU\n");
 	for (int i = 0; i < size_samplingPoint; i++){
 		float temp_ = 0;
@@ -523,8 +571,60 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 		diff_ += abs(h_kasaiV[i] - check_kasaiV[i]);
 	}
 	printf("The differenc of kasaiV vector: %f\n", diff_);
+	free(check_kasaiV);
+
+	float *check_U = (float *)malloc(mem_sizeSamplingPoint);
+	printf("temp vector U: GPU    CPU\n");
+	for (int i = 0; i < size_samplingPoint; i++){
+		check_U[i] = h_samplingPointDensity[i] / h_kasaiV[i];
+		printf("%f  %f\n", h_U[i], check_U[i]);
+	}
+
+	diff_ = 0;
+	for (int i = 0; i < size_samplingPoint; i++){
+		diff_ += abs(h_U[i] - check_U[i]);
+	}
+	printf("the difference of vector U: %f\n", diff_);
+
+	free(check_U);
 
 
+	float *check_kasaiU = (float *)malloc(mem_sizeOriginalPoint);
+	printf("kasaiU vector: GPU  CPU\n");
+	for (int i = 0; i < size_originalPoint; i++){
+		float temp_ = 0;
+		for (int j = 0; j < size_samplingPoint; j++){
+			temp_ += h_kasaiMatrix[j*size_originalPoint + i] * h_U[j];
+		}
+		check_kasaiU[i] = temp_;
+		printf("KasaiU vector: %f  %f\n", h_kasaiU[i], check_kasaiU[i]);
+	}
+	diff_ = 0;
+	for (int i = 0; i < size_originalPoint; i++){
+		diff_ += abs(h_kasaiU[i] - check_kasaiU[i]);
+	}
+	printf("The differenc of kasaiU vector: %f\n", diff_);
+	free(check_kasaiU);
+
+
+	float *check_V = (float *)malloc(mem_sizeOriginalPoint);
+	printf("temp vector V: GPU    CPU\n");
+	for (int i = 0; i < size_originalPoint; i++){
+		check_V[i] = h_originalPointDensity[i] / h_kasaiU[i];
+		printf("%f  %f\n", h_V[i], check_V[i]);
+	}
+
+	diff_ = 0;
+	for (int i = 0; i < size_originalPoint; i++){
+		diff_ += abs(h_V[i] - check_V[i]);
+	}
+	printf("the difference of vector V: %f\n", diff_);
+
+	free(check_V);
+
+	///计算传输计划矩阵
+
+	// cublasSdgmm
 
 	// CUBLAS handle
 	
