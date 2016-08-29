@@ -283,6 +283,8 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 	float *d_kasaiV, *d_kasaiU;
 	float *d_samplingPointDensity, *d_originalPointDensity;
 	float *d_diagUKasaiMatrix; /// 临时变量
+	float *d_transportPlanDensity;///临时变量
+	float *d_tempSamplPointCoordinate; // 临时变量
 	cublasHandle_t handle;
 	cublasStatus_t stat;
 	cudaError_t error;
@@ -367,6 +369,19 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 		printf("cudaMalloc d_transportPlan returned error %s(code %d), line(%d)\n", cudaGetErrorString(error), error, __LINE__);
 		exit(EXIT_FAILURE);
 	}
+
+	error = cudaMalloc((void**)&d_transportPlanDensity, mem_sizeTransportMatrix);
+	if (error != cudaSuccess){
+		printf("cudaMalloc d_transportPlanDensity returned error %s(code %d), line(%d)\n", cudaGetErrorString(error), error, __LINE__);
+		exit(EXIT_FAILURE);
+	}
+
+	error = cudaMalloc((void**)&d_tempSamplPointCoordinate, mem_sizeA);
+	if (error != cudaSuccess){
+		printf("cudaMalloc d_tempSamplPointCoordinate returned error %s(code %d), line(%d)\n", cudaGetErrorString(error), error, __LINE__);
+		exit(EXIT_FAILURE);
+	}
+
 	// copy host memory to device
 	error = cudaMemcpy(d_A, h_A, mem_sizeA, cudaMemcpyHostToDevice);
 	if (error != cudaSuccess){
@@ -628,6 +643,7 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 
 	///计算传输计划矩阵
 	// 由于cublasSdgmm函数对矩阵没有op操作，可以做个相当于转置的计算， A= BCD   AT = DT CT BT (T表示转置)特别小心
+	// 显存中计算出的 d_transportMatrix 矩阵，刚好是一个 size_samplingPoint * size_originalPoint 且刚好是按行主放置的矩阵
 	cublasSdgmm(handle, CUBLAS_SIDE_LEFT, size_originalPoint, size_samplingPoint, d_kasaiMatrix, size_originalPoint, d_V, 1, d_diagUKasaiMatrix, size_originalPoint);
 	cublasSdgmm(handle, CUBLAS_SIDE_RIGHT, size_originalPoint, size_samplingPoint, d_diagUKasaiMatrix, size_originalPoint, d_U, 1, d_transportPlan, size_originalPoint);
 
@@ -674,7 +690,61 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 	free(check_transportPlan);
 	free(ch_transportPlan);
 
+	/// 更新坐标值计算
+	cublasSdgmm(handle, CUBLAS_SIDE_RIGHT, size_originalPoint, size_samplingPoint, d_transportPlan, size_originalPoint, d_samplingPointDensity, 1, d_transportPlanDensity, size_originalPoint);
+	cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, dimsA.y, size_samplingPoint, size_originalPoint, &alpha, d_B, dimsA.y, d_transportPlanDensity, size_originalPoint, &beta, d_tempSamplPointCoordinate, dimsA.y);
 
+	float *h_transportPlanDensity = (float *)malloc(mem_sizeTransportMatrix);
+	error = cudaMemcpy(h_transportPlanDensity, d_transportPlanDensity, mem_sizeTransportMatrix, cudaMemcpyDeviceToHost);
+	if (error != cudaSuccess){
+		printf("cudaMemcpy (h_transportPlanDensity, d_transportPlanDensity) returned error %s (code %d), line(%d)\n", cudaGetErrorString(error), error, __LINE__);
+		exit(EXIT_FAILURE);
+	}
+	
+	float *h_tempSamplPointCoordinate = (float *)malloc(mem_sizeA);
+	error = cudaMemcpy(h_tempSamplPointCoordinate, d_tempSamplPointCoordinate, mem_sizeA, cudaMemcpyDeviceToHost);
+	if (error != cudaSuccess){
+		printf("cudaMemcpy (h_tempSamplPointCoordinate, d_tempSamplPointCoordinate) returned error %s (code %d), line(%d)\n", cudaGetErrorString(error), error, __LINE__);
+		exit(EXIT_FAILURE);
+	}
+
+	// 核对正确性
+	float *h_transportPlanDensityT = (float *)malloc(mem_sizeTransportMatrix);
+	for (int i = 0; i < size_originalPoint; i++){
+		for (int j = 0; j < size_samplingPoint; j++){
+			h_transportPlanDensityT[j*size_originalPoint + i] = h_transportPlanDensity[i*size_samplingPoint + j];
+		}
+	}
+
+
+	float *check_transportPlanDensity = (float *)malloc(mem_sizeTransportMatrix);
+	float *check_tempSamplPointCoordinate = (float *)malloc(mem_sizeA);
+	float *h_transportPlanT = (float *)malloc(mem_sizeTransportMatrix);
+	for (int i = 0; i < size_samplingPoint; i++){
+		for (int j = 0; j < size_originalPoint; j++){
+			h_transportPlanT[j*size_samplingPoint +i] = h_transportPlan[i*size_originalPoint + j];
+		}
+	}
+	for (int i = 0; i < size_originalPoint; i++){
+		for (int j = 0; j < size_samplingPoint; j++){
+			check_transportPlanDensity[i*size_samplingPoint + j] = h_transportPlanT[i*size_samplingPoint + j] * h_samplingPointDensity[j];
+		}
+	}
+
+	printf("Tempt matrix h_transportPlanDensity: GPU   CPU\n");
+	for (int i = 0; i < size_samplingPoint; i++){
+		for (int j = 0; j < size_originalPoint; j++){
+			printf("  %f   ", h_transportPlanDensityT[i*size_originalPoint + j]);
+		}
+		printf("\n");
+	}
+
+	for (int i = 0; i < size_samplingPoint; i++){
+		for (int j = 0; j < size_originalPoint; j++){
+			printf("  %f   ", check_transportPlanDensity[i*size_originalPoint + j]);
+		}
+		printf("\n");
+	}
 
 	// CUBLAS handle
 	
