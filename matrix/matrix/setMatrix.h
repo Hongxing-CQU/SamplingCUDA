@@ -13,7 +13,7 @@ int setWidthOriginalPoint(){
 }
 
 int setNumSamplingPoint(){
-	int num = 2;
+	int num = 4;
 	return num;
 }
 
@@ -40,7 +40,7 @@ void setSamplingPoints(float *samplingPoints, int numOfPoints, int dimensions){
 	for (int i = 0; i < dimensions; i++){
 		srand((unsigned)time(NULL));
 		for (int j = 0; j < numOfPoints; j++){
-			*(samplingPoints + j*dimensions + i) = j; // float(rand() / double(RAND_MAX));
+			*(samplingPoints + j*dimensions + i) =  (float)(rand() / double(RAND_MAX));
 		}
 	}	
 	return;	

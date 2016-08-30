@@ -250,6 +250,21 @@ int main(int argc, char *argv[])
 int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A, float *matrix_B, float *matrix_C,float *matrix_D){
 	// allocate host memory for original points and sampling points
 	
+	float *theta = (float *)malloc(sizeof(float));
+	*theta = 0.5;
+	float *one_minusTheta = (float *)malloc(sizeof(float));
+	*one_minusTheta = 1 - *theta;
+	float *lamb = (float *)malloc(sizeof(float));
+	*lamb = 3;
+	float *_R = (float *)malloc(sizeof(float));
+	*_R = 0.1;
+
+	float *theta_lambR = (float *)malloc(sizeof(float));
+	float *minusOne_divLabR = (float *)malloc(sizeof(float));
+
+	*theta_lambR = *theta * *lamb * *_R;
+	*minusOne_divLabR = -1 / *lamb / *_R;
+
 	unsigned int size_A = dimsA.x * dimsA.y * dimsA.z;
 	unsigned int mem_sizeA = sizeof(float) * size_A;
 	float *h_A = matrix_A; // 采样点的坐标
@@ -475,7 +490,7 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 
 	}
 	printf("The difference distance computation between results of CPU and GPU is %f.\n", diff_);
-	free(c_C);
+//	free(c_C);
 
 	// 计算Kasai矩阵
 	threads.x = block_size;
@@ -501,7 +516,7 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 	float *check_kasaiMatrix = (float *)malloc(mem_sizeTransportMatrix);
 	printf("kasaiMatrix on GPU and CPU \n ");
 	for (int i = 0; i < size_transportMatrix; i++){
-		check_kasaiMatrix[i] = exp(-h_distanceMatrix[i]);
+		check_kasaiMatrix[i] = exp(-c_C[i]);
 		printf("%f  %f \n", h_kasaiMatrix[i], check_kasaiMatrix[i]);
 		
 	}
@@ -518,7 +533,8 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 
 	unsigned int _iter = 1;
 	for (int i = 0; i < _iter; i++){	
-		
+		//// d_kasaiMatrix 是一个size_original x size_sampling 的矩阵
+		//  d_kasaiV 是一个 size_sampling 的向量
 		stat = cublasSgemv(handle, CUBLAS_OP_T, size_originalPoint, size_samplingPoint, &alpha, d_kasaiMatrix, size_originalPoint, d_V, 1, &beta, d_kasaiV,1);			
 		if (stat != CUBLAS_STATUS_SUCCESS){
 			printf("cublasSdot failed\n");
@@ -643,7 +659,7 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 
 	///计算传输计划矩阵
 	// 由于cublasSdgmm函数对矩阵没有op操作，可以做个相当于转置的计算， A= BCD   AT = DT CT BT (T表示转置)特别小心
-	// 显存中计算出的 d_transportMatrix 矩阵，刚好是一个 size_samplingPoint * size_originalPoint 且刚好是按行主放置的矩阵
+	// 显存中计算出的 d_transportMatrix 矩阵，刚好是一个size_originalPoint x size_samplingPoint  且刚好是按列主放置的矩阵
 	cublasSdgmm(handle, CUBLAS_SIDE_LEFT, size_originalPoint, size_samplingPoint, d_kasaiMatrix, size_originalPoint, d_V, 1, d_diagUKasaiMatrix, size_originalPoint);
 	cublasSdgmm(handle, CUBLAS_SIDE_RIGHT, size_originalPoint, size_samplingPoint, d_diagUKasaiMatrix, size_originalPoint, d_U, 1, d_transportPlan, size_originalPoint);
 
@@ -670,29 +686,35 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 		}
 	}
 
-	printf("Transport plan matrix: GPU\n");
-	for (int i = 0; i < size_samplingPoint; i++){
+	printf("Transport plan matrix: GPU  CPU \n");
+	for (int i = 0; i < size_transportMatrix; i++){
+		printf("Transport plan matrix: %f  %f\n", h_transportPlan[i], check_transportPlan[i]);
+	}
+	/*for (int i = 0; i < size_samplingPoint; i++){
 		for (int j = 0; j < size_originalPoint; j++){
 			printf("  %f  ", h_transportPlan[i*size_originalPoint + j]);
 		}
 		printf("\n");
-	}
+	} */
 
 
 	printf("Transport plan matrix: CPU\n");
-	for (int i = 0; i < size_samplingPoint; i++){
+/*	for (int i = 0; i < size_samplingPoint; i++){
 		for (int j = 0; j < size_originalPoint; j++){
 			printf("  %f  ", check_transportPlan[i*size_originalPoint + j]);
 		}
 		printf("\n");
-	}
+	}*/
 
-	free(check_transportPlan);
-	free(ch_transportPlan);
+	//free(check_transportPlan);
+	//free(ch_transportPlan);
 
-	/// 更新坐标值计算
+	/// 更新坐标值计算,共分为三步，第一步是Y与对角矩阵的积分，第二步是计算原始点矩阵与新的矩阵的求积，第三步是计算矩阵求和，但分成了两个小步
 	cublasSdgmm(handle, CUBLAS_SIDE_RIGHT, size_originalPoint, size_samplingPoint, d_transportPlan, size_originalPoint, d_samplingPointDensity, 1, d_transportPlanDensity, size_originalPoint);
 	cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, dimsA.y, size_samplingPoint, size_originalPoint, &alpha, d_B, dimsA.y, d_transportPlanDensity, size_originalPoint, &beta, d_tempSamplPointCoordinate, dimsA.y);
+	
+	//cublasSaxpy(handle, size_samplingPoint * dimsA.y, minusOne_divLabR, d_A, 1, d_tempSamplPointCoordinate, 1);
+	//cublasSaxpy(handle, size_samplingPoint * dimsA.y, theta_lambR, d_tempSamplPointCoordinate, 1, d_A, 1);
 
 	float *h_transportPlanDensity = (float *)malloc(mem_sizeTransportMatrix);
 	error = cudaMemcpy(h_transportPlanDensity, d_transportPlanDensity, mem_sizeTransportMatrix, cudaMemcpyDeviceToHost);
@@ -708,33 +730,51 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 		exit(EXIT_FAILURE);
 	}
 
-	// 核对正确性
-	float *h_transportPlanDensityT = (float *)malloc(mem_sizeTransportMatrix);
-	for (int i = 0; i < size_originalPoint; i++){
-		for (int j = 0; j < size_samplingPoint; j++){
-			h_transportPlanDensityT[j*size_originalPoint + i] = h_transportPlanDensity[i*size_samplingPoint + j];
+	float *h_samplPointCoordinate = (float *)malloc(mem_sizeA);
+	error = cudaMemcpy(h_samplPointCoordinate, d_A, mem_sizeA, cudaMemcpyDeviceToHost);
+	if (error != cudaSuccess){
+		printf("cudaMemcpy (h_tempSamplPointCoordinate, d_tempSamplPointCoordinate) returned error %s (code %d), line(%d)\n", cudaGetErrorString(error), error, __LINE__);
+		exit(EXIT_FAILURE);
+	}
+
+	// 核对正确性 h_transportPlanDensity
+    float *h_transportPlanDensityT = (float *)malloc(mem_sizeTransportMatrix);
+	for (int i = 0; i < size_samplingPoint; i++){
+			for (int j = 0; j < size_originalPoint; j++){
+				h_transportPlanDensityT[j*size_samplingPoint + i] = h_transportPlanDensity[i*size_originalPoint + j];
 		}
 	}
 
 
 	float *check_transportPlanDensity = (float *)malloc(mem_sizeTransportMatrix);
+	float *check_transportPlanDensityT = (float *)malloc(mem_sizeTransportMatrix);
 	float *check_tempSamplPointCoordinate = (float *)malloc(mem_sizeA);
-	float *h_transportPlanT = (float *)malloc(mem_sizeTransportMatrix);
+	float *check_transportPlanT = (float *)malloc(mem_sizeTransportMatrix);
 	for (int i = 0; i < size_samplingPoint; i++){
 		for (int j = 0; j < size_originalPoint; j++){
-			h_transportPlanT[j*size_samplingPoint +i] = h_transportPlan[i*size_originalPoint + j];
-		}
-	}
-	for (int i = 0; i < size_originalPoint; i++){
-		for (int j = 0; j < size_samplingPoint; j++){
-			check_transportPlanDensity[i*size_samplingPoint + j] = h_transportPlanT[i*size_samplingPoint + j] * h_samplingPointDensity[j];
+			check_transportPlanT[j*size_samplingPoint +i] = check_transportPlan[i*size_originalPoint + j];
 		}
 	}
 
+	for (int i = 0; i < size_originalPoint; i++){
+		for (int j = 0; j < size_samplingPoint; j++){
+			check_transportPlanDensity[i*size_samplingPoint + j] = check_transportPlanT[i*size_samplingPoint + j] * h_samplingPointDensity[j];
+		}
+	}
+
+/*	for (int i = 0; i < size_originalPoint; i++){
+		for (int j = 0; j < size_samplingPoint; j++){
+			check_transportPlanDensityT[ j* size_originalPoint +i] = check_transportPlanDensity[i*size_samplingPoint + j];
+		}
+	}*/
+
 	printf("Tempt matrix h_transportPlanDensity: GPU   CPU\n");
-	for (int i = 0; i < size_samplingPoint; i++){
+	for (int i = 0; i < size_transportMatrix; i++){
+		printf("Tempt matrix h_transportPlanDensity:  %f  %f\n", h_transportPlanDensityT[i], check_transportPlanDensity[i]);
+	}
+/*	for (int i = 0; i < size_samplingPoint; i++){
 		for (int j = 0; j < size_originalPoint; j++){
-			printf("  %f   ", h_transportPlanDensityT[i*size_originalPoint + j]);
+			printf("  %f   ", h_transportPlanDensity[i*size_originalPoint + j]);
 		}
 		printf("\n");
 	}
@@ -745,6 +785,44 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 		}
 		printf("\n");
 	}
+	*/
+	// 核对正确性 坐标
+
+	float *h_BT = (float *)malloc(mem_sizeB);
+	float *check_ordinate = (float*)malloc(mem_sizeA);
+	for (int i = 0; i < size_originalPoint; i++){
+		for (int j = 0; j <dimsB.y; j++){
+			h_BT[j*size_originalPoint + i] = h_B[i*dimsB.y + j];
+		}
+	}
+
+	
+	for (int i = 0; i < dimsB.y; i++){
+		for (int j = 0; j < size_samplingPoint; j++){
+			check_ordinate[i * size_samplingPoint + j] = 0;
+			for (int k = 0; k < size_originalPoint; k++){
+				check_ordinate[i * size_samplingPoint + j] += h_BT[i * size_originalPoint + k] * check_transportPlanDensity[k * size_samplingPoint + j];
+			}
+		}
+	}
+
+/*	for (int i = 0; i < size_samplingPoint * dimsA.y; i++){
+		float temp_ = check_ordinate[i];
+		check_ordinate[i] = *one_minusTheta * h_A[i] + *theta_lambR * temp_;
+	} */
+	
+	float *h_tempSamplPointCoordinateT = (float *)malloc(mem_sizeA);
+	for (int i = 0; i < dimsA.y; i++){
+		for (int j = 0; j < size_samplingPoint; j++){
+			h_tempSamplPointCoordinateT[i * size_samplingPoint + j] = h_tempSamplPointCoordinate[j * dimsA.y + i];
+		}
+	}
+	
+	printf("Cordinate on GPU  CPU\n");
+	for (int i = 0; i < dimsA.y * size_samplingPoint; i++){
+		printf("Coordinate: %f  %f \n", h_tempSamplPointCoordinateT[i], check_ordinate[i]);
+	}
+	/// 
 
 	// CUBLAS handle
 	
