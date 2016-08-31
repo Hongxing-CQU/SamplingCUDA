@@ -3,17 +3,17 @@
 #include <time.h>  
 
 int setHeightOriginalPoint(){
-	int height = 4;
+	int height =4;
 	return height;
 }
 
 int setWidthOriginalPoint(){
-	int width = 4;
+	int width =4;
 	return width;
 }
 
 int setNumSamplingPoint(){
-	int num = 4;
+	int num =4;
 	return num;
 }
 
