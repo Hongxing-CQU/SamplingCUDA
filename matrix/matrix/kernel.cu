@@ -41,7 +41,7 @@ __global__ void kaisaiMatrixComputation(float *b, float *a){
 	__shared__ float As[BLOCK_SIZE];
 
 	As[tx] = a[bx*BLOCK_SIZE + tx];
-	Csub = expf(-1 * As[tx]);
+	Csub = expf(-100 * As[tx]);
 	b[bx*BLOCK_SIZE + tx] = Csub;
 	return;
 }
@@ -72,11 +72,39 @@ __global__ void elementWiseDIV(float *c, float *a, float* b){
 	else if (Bs[tx] < 0 && Bs[tx] > -0.000001){
 		Bs[tx] = -0.000001;
 	}
+	
 	c[bx * BLOCK_SIZE + tx] = As[tx] / Bs[tx];
+	
+	return;
+}
+
+
+template<int BLOCK_SIZE>
+__global__ void elementWiseMUL(float *c, float *a, float* b){
+	int bx = blockIdx.x;
+	//int by = blockIdx.y;
+
+	// Thread index 
+	int tx = threadIdx.x;
+	//int ty = threadIdx.y;
+
+	float Csub = 0;
+
+	// Declaration of the shared memory array as used to store the sum-matrix of A
+	__shared__ float As[BLOCK_SIZE];
+
+	// Delcaration of the shared memory array as used to store the sub-matrix of B;
+	__shared__ float Bs[BLOCK_SIZE];
+
+	As[tx] = a[bx * BLOCK_SIZE + tx];
+	Bs[tx] = b[bx * BLOCK_SIZE + tx];
+
+	
+	c[bx * BLOCK_SIZE + tx] = As[tx] * Bs[tx];
 
 	return;
-
 }
+
 
 template<int BLOCK_SIZE>
 __global__ void distancePointToPointCUDA(float *c, float *a, float *b, int hA, int wA, int hB, int wB)
@@ -255,9 +283,9 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 	float *one_minusTheta = (float *)malloc(sizeof(float));
 	*one_minusTheta = 1 - *theta;
 	float *lamb = (float *)malloc(sizeof(float));
-	*lamb = 3;
+	*lamb = 1;
 	float *_R = (float *)malloc(sizeof(float));
-	*_R = 0.1;
+	*_R =1;
 
 	float *theta_lambR = (float *)malloc(sizeof(float));
 	float *minusOne_divLabR = (float *)malloc(sizeof(float));
@@ -268,6 +296,11 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 
 	float stop_U = 0.001; // 计算传输计划矩阵的停止标准
 	float stop_X = 0.001;// 计算坐标的停止标准
+
+	float alpha = 1.0;
+	float beta = 0.0;
+	unsigned int _iter = 20;
+	float temp_alpha = -1.0;
 
 	unsigned int size_A = dimsA.x * dimsA.y * dimsA.z;
 	unsigned int mem_sizeA = sizeof(float) * size_A;
@@ -288,9 +321,9 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 	unsigned int size_transportMatrix = dimsA.x * dimsB.x;
 	unsigned int mem_sizeTransportMatrix = size_transportMatrix * sizeof(float);
 
-	float *h_V = (float *)malloc(dimsB.x * sizeof(float));// 计算传输计划的向量v；
+	float *h_V = (float *)malloc(mem_sizeOriginalPoint);// 计算传输计划的向量v；
 	for (int i = 0; i < dimsB.x; i++){
-		*(h_V + i) = (float)1;
+		*(h_V + i) = (float)1.0;
 	}
 
 	float *h_distanceMatrix;
@@ -301,6 +334,7 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 	float *d_A, *d_B, *d_distanceMatrix, *d_kasaiMatrix, *d_transportPlan, *d_U, *d_V; // device memory中的变量，其中d_U, d_V 为中间变量
 	float *d_kasaiV, *d_kasaiU;
 	float *d_samplingPointDensity, *d_originalPointDensity;
+	float *d_tempVectorStopCri;
 	float *d_diagUKasaiMatrix; /// 临时变量
 	float *d_transportPlanDensity;///临时变量
 	float *d_tempSamplPointCoordinate; // 临时变量
@@ -401,6 +435,12 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 		exit(EXIT_FAILURE);
 	}
 
+	error = cudaMalloc((void**)&d_tempVectorStopCri, mem_sizeOriginalPoint);
+	if (error != cudaSuccess){
+		printf("cudaMalloc d_tempVectorStopCri returned error %s(code %d), line(%d)\n", cudaGetErrorString(error), error, __LINE__);
+		exit(EXIT_FAILURE);
+	}
+
 	// copy host memory to device
 	error = cudaMemcpy(d_A, h_A, mem_sizeA, cudaMemcpyHostToDevice);
 	if (error != cudaSuccess){
@@ -459,8 +499,8 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 	float *stop_valueU = (float *)malloc(sizeof(float));
 	float *stop_valueX = (float *)malloc(sizeof(float));
 
-	*stop_valueU = 1;
-	*stop_valueX = 1;
+	*stop_valueU = 999999;
+	*stop_valueX = 999999;
 
 	//block_size = 32;
 	dim3 threads(1, block_size, 1);
@@ -508,8 +548,10 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 	//	free(c_C);
 */	
 
-	float *h_kasaiV = (float *)malloc(size_samplingPoint);
-	float *h_kasaiU = (float *)malloc(size_originalPoint);
+	float *h_kasaiV = (float *)malloc(mem_sizeSamplingPoint);
+	float *h_kasaiU = (float *)malloc(mem_sizeOriginalPoint);
+	//float *h_V = (float *)malloc(mem_sizeOriginalPoint);
+	float *h_U = (float *)malloc(mem_sizeSamplingPoint);
 
 	while (*stop_valueX > stop_X){		
 
@@ -551,13 +593,10 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 		//	free(check_kasaiMatrix);
 */
 		// 计算传输计划矩阵
-		float alpha = 1.0;
-		float beta = 0.0;
-		unsigned int _iter =20;
-		float temp_alpha =-1.0;
-				
-
-		while (*stop_valueU > stop_U){
+						
+		float diff_stopValueU = *stop_valueU;
+		float stop_valueZero = *stop_valueU;
+		while (diff_stopValueU > stop_U){
 			for (int i = 0; i < _iter; i++){
 				//// d_kasaiMatrix 是一个size_original x size_sampling 的矩阵， d_V 是一个size_original的向量
 				//  d_kasaiV 是一个 size_sampling 的向量
@@ -597,6 +636,13 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 				// 同步函数
 				cudaThreadSynchronize();
 
+			/*	error = cudaMemcpy(h_U, d_U, mem_sizeSamplingPoint, cudaMemcpyDeviceToHost);
+
+				for (int i = 0; i < size_samplingPoint; i++){
+
+					printf("h_U vector: %f \n", h_U[i]);
+				}
+				*/
 
 				stat = cublasSgemv(handle, CUBLAS_OP_N, size_originalPoint, size_samplingPoint, &alpha, d_kasaiMatrix, size_originalPoint, d_U, 1, &beta, d_kasaiU, 1);
 				if (stat != CUBLAS_STATUS_SUCCESS){
@@ -606,6 +652,17 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 				// 同步函数
 				cudaThreadSynchronize();
 
+			/*	error = cudaMemcpy(h_kasaiU, d_kasaiU, mem_sizeOriginalPoint, cudaMemcpyDeviceToHost);
+				if (error != cudaSuccess){
+					printf("cudaMemcpy (h_kasaiV, d_kasaiV) returned error %s (code %d), line(%d)\n", cudaGetErrorString(error), error, __LINE__);
+					exit(EXIT_FAILURE);
+				}  */
+
+		//		for (int i = 0; i < size_originalPoint; i++){
+
+		//			printf("KasaiU vector: %f \n", h_kasaiU[i]);
+		//		}
+				
 				threads.x = block_size;
 				threads.y = 1;
 				threads.z = 1;
@@ -623,15 +680,18 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 				exit(EXIT_FAILURE);
 			}
 			// 同步函数
+			cudaThreadSynchronize();			
+
+			threads.x = block_size;
+			threads.y = 1;
+			threads.z = 1;
+			grid.x = size_originalPoint / threads.x;
+			grid.y = 1;
+			grid.z = 1;
+			elementWiseMUL<32> << <grid, threads >> >(d_tempVectorStopCri, d_V, d_kasaiU);
 			cudaThreadSynchronize();
 
-			for (int i = 0; i < size_originalPoint; i++){
-
-				printf("KasaiV vector: %f \n", h_kasaiU[i]);
-			}
-
-
-			stat = cublasSaxpy(handle, size_originalPoint, &temp_alpha, d_originalPointDensity, 1, d_kasaiU, 1);
+			stat = cublasSaxpy(handle, size_originalPoint, &temp_alpha, d_originalPointDensity, 1, d_tempVectorStopCri, 1);
 			if (stat != CUBLAS_STATUS_SUCCESS){
 				printf("cublasSdot failed\n");
 				exit(EXIT_FAILURE);
@@ -639,18 +699,14 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 			// 同步函数
 			cudaThreadSynchronize();
 
-			error = cudaMemcpy(h_kasaiU, d_kasaiU, mem_sizeOriginalPoint, cudaMemcpyDeviceToHost);
-			if (error != cudaSuccess){
-				printf("cudaMemcpy (h_kasaiV, d_kasaiV) returned error %s (code %d), line(%d)\n", cudaGetErrorString(error), error, __LINE__);
-				exit(EXIT_FAILURE);
-			}
-
-
 			/// 计算u v 的停止值
-			stat = cublasSnrm2(handle, size_originalPoint, d_kasaiU, 1, stop_valueU);
-			printf("valueU: %f \n",*stop_valueU);
+			stat = cublasSnrm2(handle, size_originalPoint, d_tempVectorStopCri, 1, stop_valueU);
+			diff_stopValueU = abs(stop_valueZero - *stop_valueU);
+			stop_valueZero = *stop_valueU;
+			printf("valueU: %f  %f \n",*stop_valueU, diff_stopValueU);
 			// 同步函数
 			cudaThreadSynchronize();
+
 		}
 
 /*
@@ -963,6 +1019,7 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 		//// 计算传输代价的
 		cublasSdot(handle, size_transportMatrix, d_distanceMatrix, 1, d_transportPlan, 1, stop_valueX);
 		// 同步函数
+		printf("传输代价： %f\n", *stop_valueX);
 		cudaThreadSynchronize();
 
 	}
