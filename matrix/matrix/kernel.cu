@@ -66,15 +66,46 @@ __global__ void elementWiseDIV(float *c, float *a, float* b){
 	As[tx] = a[bx * BLOCK_SIZE + tx];
 	Bs[tx] = b[bx * BLOCK_SIZE + tx];
 
-	if (Bs[tx] > 0 && Bs[tx] < 0.000001){
+	if (Bs[tx] >= 0 && Bs[tx] < 0.000001){
 		Bs[tx] = 0.000001;
 	}
-	else if (Bs[tx] < 0 && Bs[tx] > -0.000001){
+	else if (Bs[tx] <= 0 && Bs[tx] > -0.000001){
 		Bs[tx] = -0.000001;
 	}
 	
 	c[bx * BLOCK_SIZE + tx] = As[tx] / Bs[tx];
 	
+	return;
+}
+
+///向量求倒数
+template<int BLOCK_SIZE>
+__global__ void elementWiseREC(float *c, float *b){
+	int bx = blockIdx.x;
+	//int by = blockIdx.y;
+	// Thread index 
+	int tx = threadIdx.x;
+	//int ty = threadIdx.y;
+	float Csub = 0;
+
+	// Declaration of the shared memory array as used to store the sum-matrix of A
+	//__shared__ float As[BLOCK_SIZE];
+
+	// Delcaration of the shared memory array as used to store the sub-matrix of B;
+	__shared__ float Bs[BLOCK_SIZE];
+
+	// As[tx] = a[bx * BLOCK_SIZE + tx];
+	Bs[tx] = b[bx * BLOCK_SIZE + tx];
+
+	if (Bs[tx] >= 0 && Bs[tx] < 0.000001){
+		Bs[tx] = 0.000001;
+	}
+	else if (Bs[tx] <= 0 && Bs[tx] > -0.000001){
+		Bs[tx] = -0.000001;
+	}
+
+	c[bx * BLOCK_SIZE + tx] = 1.0 / Bs[tx];
+
 	return;
 }
 
@@ -334,6 +365,7 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 	float *d_A, *d_B, *d_distanceMatrix, *d_kasaiMatrix, *d_transportPlan, *d_U, *d_V; // device memory中的变量，其中d_U, d_V 为中间变量
 	float *d_kasaiV, *d_kasaiU;
 	float *d_samplingPointDensity, *d_originalPointDensity;
+	float *d_samplingPointDensityREC;
 	float *d_tempVectorStopCri;
 	float *d_diagUKasaiMatrix; /// 临时变量
 	float *d_transportPlanDensity;///临时变量
@@ -402,6 +434,12 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 	error = cudaMalloc((void**)&d_samplingPointDensity, mem_sizeSamplingPoint);
 	if (error != cudaSuccess){
 		printf("cudaMalloc d_samplingPointDensity returned error %s(code %d), line(%d)\n", cudaGetErrorString(error), error, __LINE__);
+		exit(EXIT_FAILURE);
+	}
+
+	error = cudaMalloc((void**)&d_samplingPointDensityREC, mem_sizeSamplingPoint);
+	if (error != cudaSuccess){
+		printf("cudaMalloc d_samplingPointDensityREC returned error %s(code %d), line(%d)\n", cudaGetErrorString(error), error, __LINE__);
 		exit(EXIT_FAILURE);
 	}
 
@@ -513,6 +551,15 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 	else{
 		distancePointToPointCUDA<32> << <grid, threads >> >(d_distanceMatrix, d_A, d_B, dimsA.x, dimsA.y, dimsB.x, dimsB.y);
 	}
+
+	threads.x = block_size;
+	threads.y = 1;
+	threads.z = 1;
+	grid.x = size_samplingPoint / threads.x;
+	grid.y = 1;
+	grid.z = 1;
+	elementWiseREC<32> << <grid, threads >> >(d_samplingPointDensityREC, d_samplingPointDensity);
+
 	// 同步函数
 	cudaThreadSynchronize();
 	/// 测试distancePointToPointCUDA是否正确
@@ -594,8 +641,8 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 */
 		// 计算传输计划矩阵
 						
-		float diff_stopValueU = *stop_valueU;
-		float stop_valueZero = *stop_valueU;
+		float diff_stopValueU = 999999;// *stop_valueU;
+		float stop_valueZero = 999999;// *stop_valueU;
 		while (diff_stopValueU > stop_U){
 			for (int i = 0; i < _iter; i++){
 				//// d_kasaiMatrix 是一个size_original x size_sampling 的矩阵， d_V 是一个size_original的向量
@@ -843,7 +890,7 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 		//free(ch_transportPlan);
 
 		/// 更新坐标值计算,共分为三步，第一步是Y与对角矩阵的积分，第二步是计算原始点矩阵与新的矩阵的求积，第三步是计算矩阵求和，但分成了两个小步
-		cublasSdgmm(handle, CUBLAS_SIDE_RIGHT, size_originalPoint, size_samplingPoint, d_transportPlan, size_originalPoint, d_samplingPointDensity, 1, d_transportPlanDensity, size_originalPoint);
+		cublasSdgmm(handle, CUBLAS_SIDE_RIGHT, size_originalPoint, size_samplingPoint, d_transportPlan, size_originalPoint, d_samplingPointDensityREC, 1, d_transportPlanDensity, size_originalPoint);
 		// 同步函数
 		cudaThreadSynchronize();
 
