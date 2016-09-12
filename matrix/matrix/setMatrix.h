@@ -3,47 +3,47 @@
 #include <time.h>  
 
 int setHeightOriginalPoint(){
-	int height =512;
+	int height = 16;
 	return height;
 }
 
 int setWidthOriginalPoint(){
-	int width =512;
+	int width = 16;
 	return width;
 }
 
 int setNumSamplingPoint(){
-	int num =1024;
+	int num = 32;
 	return num;
 }
 
-void setOriginalPoints(float *matrix, int heightMatrix, int widthMatrix, int dimensions ){
-	
-	float *ip ;
-	
-	for (int i = 0; i < heightMatrix; i++ ){
+void setOriginalPoints(float *matrix, int heightMatrix, int widthMatrix, int dimensions){
+
+	float *ip;
+
+	for (int i = 0; i < heightMatrix; i++){
 		for (int j = 0; j < widthMatrix; j++){
-			ip = matrix + i * widthMatrix * dimensions + j * dimensions;			
+			ip = matrix + i * widthMatrix * dimensions + j * dimensions;
 			*ip = (float)(2 * j + 1) / 2 / widthMatrix;
 			ip++;
 			*ip = (float)(2 * i + 1) / 2 / heightMatrix;
-			
-	//		matrix[widthMatrix * i + j ] = ( 2 * j + 1 ) / 2 / widthMatrix ;
-		//	matrix[widthMatrix * i + j + widthMatrix * heightMatrix] = (2 * i + 1) / 2 / heightMatrix;
-		}		
+
+			//		matrix[widthMatrix * i + j ] = ( 2 * j + 1 ) / 2 / widthMatrix ;
+			//	matrix[widthMatrix * i + j + widthMatrix * heightMatrix] = (2 * i + 1) / 2 / heightMatrix;
+		}
 	}
 	return;
 }
 
 void setSamplingPoints(float *samplingPoints, int numOfPoints, int dimensions){
-	
+
 	for (int i = 0; i < dimensions; i++){
 		srand((unsigned)time(NULL));
 		for (int j = 0; j < numOfPoints; j++){
-			*(samplingPoints + j*dimensions + i) =  (float)(rand() / double(RAND_MAX));
+			*(samplingPoints + j*dimensions + i) = abs((float)(rand() / double(RAND_MAX)));
 		}
-	}	
-	return;	
+	}
+	return;
 }
 
 void setSamplingPointDensity(float *density, int numOfPoints){
@@ -51,7 +51,7 @@ void setSamplingPointDensity(float *density, int numOfPoints){
 		return;
 	for (int i = 0; i < numOfPoints; i++){
 
-		*(density + i) = (float) 1 / numOfPoints;
+		*(density + i) = (float)1 / numOfPoints;
 	}
 	return;
 }
