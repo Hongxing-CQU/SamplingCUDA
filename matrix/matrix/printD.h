@@ -34,6 +34,19 @@ void writeD(float *ptr, int num,int r){
 	fclose(fp);
 }
 
+void writeResult(float *ptr, int num, int r){
+	float* result = (float *)malloc(sizeof(float) * num);
+	cudaMemcpy(result, ptr, num*sizeof(float), cudaMemcpyDeviceToHost);
+
+	FILE* fp;
+	fp = fopen("result.txt", "w");
+	for (int i = 0; i<num-1; i=i+2)
+	{
+		fprintf(fp, "%f %f\n", result[i], result[i+1]);
+	}
+	fprintf(fp, "\n");
+	fclose(fp);
+}
 void write2File(float *ptr,int num, int r){
 	FILE* fp;
 	if (r == 1){

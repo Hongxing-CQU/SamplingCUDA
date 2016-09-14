@@ -1,19 +1,20 @@
 //#include <math>
 #include <stdlib.h> 
 #include <time.h>  
+#define Lamda 800
 
 int setHeightOriginalPoint(){
-	int height = 16;
+	int height = 64;
 	return height;
 }
 
 int setWidthOriginalPoint(){
-	int width = 16;
+	int width = 64;
 	return width;
 }
 
 int setNumSamplingPoint(){
-	int num = 32;
+	int num = 256;
 	return num;
 }
 
@@ -36,11 +37,11 @@ void setOriginalPoints(float *matrix, int heightMatrix, int widthMatrix, int dim
 }
 
 void setSamplingPoints(float *samplingPoints, int numOfPoints, int dimensions){
-
-	for (int i = 0; i < dimensions; i++){
-		srand((unsigned)time(NULL));
-		for (int j = 0; j < numOfPoints; j++){
-			*(samplingPoints + j*dimensions + i) = abs((float)(rand() / double(RAND_MAX)));
+	srand((unsigned)time(NULL));
+	for (int i = 0; i <numOfPoints; i++){
+		
+		for (int j = 0; j <dimensions; j++){
+			*(samplingPoints + i*dimensions + j) = static_cast<float>(rand() % RAND_MAX) / RAND_MAX;
 		}
 	}
 	return;

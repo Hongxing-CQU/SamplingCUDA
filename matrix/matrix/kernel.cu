@@ -1,236 +1,19 @@
-#include "printD.h"
-#include "device_launch_parameters.h"
 // CUDA runtime
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
-
+#include "device_launch_parameters.h"
 // CUDA and CUBLAS functions
 //#include <helper_functions.h>
 //#include <helper_cuda.h>
 //#include <helper_string.h>
 #include <stdio.h>
 #include "setMatrix.h"
+#include "printD.h"
+#include "MatrixFunction.cuh"
 
-typedef struct {
-	int width;
-	int height;
-	int stride;
-	float *elements;
-} Matrix_;
-#define IDX2C(i,j,ld) (((j)*(ld))+(i));
-#define Lamda 100
-
-cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size);
-// cudaError_t multiMatriWithCuda(float *c, float *a, float *b, int widthA, int heightA, int widthB, int heightB,);
-
-__global__ void addKernel(int *c, const int *a, const int *b)
-{
-	int i = threadIdx.x;
-	c[i] = a[i] + b[i];
-}
-
-template<int BLOCK_SIZE>
-__global__ void kaisaiMatrixComputation(float *b, float *a){
-	int bx = blockIdx.x;
-	//int by = blockIdx.y;
-
-	// Thread index 
-	int tx = threadIdx.x;
-	//int ty = threadIdx.y;
-
-	float Csub = 0;
-	// Declaration of the shared memory array as used to store the sum-matrix of A
-	__shared__ float As[BLOCK_SIZE];
-
-	As[tx] = a[bx*BLOCK_SIZE + tx];
-	Csub = expf(-Lamda * As[tx]);
-	b[bx*BLOCK_SIZE + tx] = Csub;
-	return;
-}
-
-template<int BLOCK_SIZE>
-__global__ void elementWiseDIV(float *c, float *a, float* b){
-	int bx = blockIdx.x;
-	//int by = blockIdx.y;
-
-	// Thread index 
-	int tx = threadIdx.x;
-	//int ty = threadIdx.y;
-
-	float Csub = 0;
-
-	// Declaration of the shared memory array as used to store the sum-matrix of A
-	__shared__ float As[BLOCK_SIZE];
-
-	// Delcaration of the shared memory array as used to store the sub-matrix of B;
-	__shared__ float Bs[BLOCK_SIZE];
-
-	As[tx] = a[bx * BLOCK_SIZE + tx];
-	Bs[tx] = b[bx * BLOCK_SIZE + tx];
-
-	/*if (Bs[tx] >= 0 && Bs[tx] < 0.000001){
-		Bs[tx] = 0.000001;
-	}
-	else if (Bs[tx] <= 0 && Bs[tx] > -0.000001){
-		Bs[tx] = -0.000001;
-	}*/
-
-	c[bx * BLOCK_SIZE + tx] = As[tx] / Bs[tx];
-
-	return;
-}
-
-
-template<int BLOCK_SIZE>
-__global__ void elementWiseMUL(float *c, float *a, float* b){
-	int bx = blockIdx.x;
-	//int by = blockIdx.y;
-
-	// Thread index 
-	int tx = threadIdx.x;
-	//int ty = threadIdx.y;
-
-	float Csub = 0;
-
-	// Declaration of the shared memory array as used to store the sum-matrix of A
-	__shared__ float As[BLOCK_SIZE];
-
-	// Delcaration of the shared memory array as used to store the sub-matrix of B;
-	__shared__ float Bs[BLOCK_SIZE];
-
-	As[tx] = a[bx * BLOCK_SIZE + tx];
-	Bs[tx] = b[bx * BLOCK_SIZE + tx];
-
-
-	c[bx * BLOCK_SIZE + tx] = As[tx] * Bs[tx];
-
-	return;
-}
-
-
-template<int BLOCK_SIZE>
-__global__ void distancePointToPointCUDA(float *c, float *a, float *b, int hA, int wA, int hB, int wB)
-{
-	// Block index
-	int bx = blockIdx.x;
-	int by = blockIdx.y;
-
-	// Thread index 
-	int tx = threadIdx.x;
-	int ty = threadIdx.y;
-
-	// index of the first sub-matrix of A processed by the block
-	//	int a_begin = BLOCK_SIZE * bx;
-
-	// index of the last sub-matrix of A processed by the block
-	//	int a_end = a_begin +  BLOCK_SIZE - 1;
-
-	// Step size used to iterate through the sub-matrices of A
-	//	int a_step = BLOCK_SIZE;
-
-	// Index of the first sub-matrix of B processed by the block
-	//	int b_begin =  BLOCK_SIZE * by;
-
-	// Index of the last sub-matrix of B proceesed by the block
-	//	int b_end = b_begin +  BLOCK_SIZE - 1;
-
-	// Step size used to iterate through the sub-matrices of B
-	//	int b_step = BLOCK_SIZE;
-
-	// Csub is used to store the element of the block sub-matrix
-	// that is computed by the thread
-	float Csub = 0;
-
-	//const int B = wA;
-
-	// Declaration of the shared memory array as used to store the sum-matrix of A
-	__shared__ float As[2];
-
-	// Delcaration of the shared memory array as used to store the sub-matrix of B;
-	__shared__ float Bs[BLOCK_SIZE * 2];
-
-	// Load the matrices from device memroy 
-	// to shared memory; each thread loads 
-	// one element of each matrix
-
-#pragma unroll
-
-	for (int i = 0; i < wA; i++){
-		As[i] = a[bx * wA + i];
-
-	}
-
-#pragma unroll
-
-	for (int i = 0; i < wA; i++){
-		Bs[ty * wA + i] = b[by * BLOCK_SIZE * wB + ty * wB + i];
-	}
-
-	// Synchronize to make sure the matrices are loaded
-
-	__syncthreads();
-
-#pragma unroll
-	for (int i = 0; i < wA; i++){
-		float dif_ = As[i] - Bs[ty * wA + i];
-		Csub += dif_ * dif_;
-	}
-
-	// Synchronized to make sure that the preceeding 
-	// computation is done 
-
-	__syncthreads();
-	// Write the block sub- matrix to device memory;
-	// eahc thread writes one element
-
-	int c_line = bx;
-	int c_col = by * BLOCK_SIZE + ty;
-	c[c_line * hB + c_col] = Csub;
-}
-
-int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A, float *matrix_B, float *matrix_C, float *matrix_D);
-
-int initCuda(){
-	int devID = 0;
-
-	cudaSetDevice(devID);
-
-	cudaError_t error;
-	cudaDeviceProp deviceProp;
-	error = cudaGetDevice(&devID);
-
-	if (error != cudaSuccess){
-		printf("cudaGetDevice returned error %s (code %d), line (%d)\n", cudaGetErrorString(error), error, __LINE__);
-	}
-
-	error = cudaGetDeviceProperties(&deviceProp, devID);
-
-	if (deviceProp.computeMode == cudaComputeModeProhibited){
-		fprintf(stderr, "Error: device is runing in <Compute Mode Prohibited>, no threads can use ::cudaSetDevice().\n");
-		exit(EXIT_SUCCESS);
-	}
-
-	if (error != cudaSuccess){
-		printf("cudaGetDeviceProperties returned error %s (code %d), line(%d)\n", cudaGetErrorString(error), error, __LINE__);
-
-	}
-	else{
-		printf("GPU Device %d: \"%s\" with compute capability %d.%d\n\n", devID, deviceProp.name, deviceProp.major, deviceProp.minor);
-	}
-
-	// Use a larger block size for Fermi and above
-	int block_size = deviceProp.major < 2 ? 16 : 32;
-	return block_size;
-}
 
 int main(int argc, char *argv[])
 {
-
-
-	const int arraySize = 5;
-	const int a[arraySize] = { 1, 2, 3, 4, 5 };
-	const int b[arraySize] = { 10, 20, 30, 40, 50 };
-	int c[arraySize] = { 0 };
 	int DIMENSIONS = 2;
 
 	int num_samplingPoints; // 采样点的数量
@@ -256,6 +39,7 @@ int main(int argc, char *argv[])
 	setOriginalPoints(m_originalPoints, height_originalPoints, width_originalPoints, DIMENSIONS);
 	setSamplingPointDensity(m_samplingPointsDensity, num_samplingPoints);
 	setSamplingPointDensity(m_originalPointsDesntiy, num_originalPoints);
+	
 	//输出测试
 	write2File(m_originalPoints, width_originalPoints * height_originalPoints * DIMENSIONS,1);
 	write2File(m_samplingPoints, num_samplingPoints* DIMENSIONS, 2);
@@ -533,6 +317,7 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 		distancePointToPointCUDA<32> << <grid, threads >> >(d_distanceMatrix, d_A, d_B, dimsA.x, dimsA.y, dimsB.x, dimsB.y);
 	}
 	cudaThreadSynchronize();// 同步函数
+	
 /*
 	// 测试distancePointToPointCUDA是否正确 
 	
@@ -571,10 +356,16 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 	float *h_kasaiU = (float *)malloc(mem_sizeOriginalPoint);
 	//float *h_V = (float *)malloc(mem_sizeOriginalPoint);
 	float *h_U = (float *)malloc(mem_sizeSamplingPoint);
-	
-	
+
+	//统计时间
+	//cudaEvent_t start, stop;
+	float time;
+	//cudaEventCreate(&start);
+	//cudaEventCreate(&stop);
+	cudaEventRecord(start, 0);
+
 	//while (*stop_valueX > 0.0){
-	for (int ii = 0; ii < 50;ii++){
+	for (int ii = 0; ii < 20;ii++){
 		// 计算Kasai矩阵
 		threads.x = block_size;
 		threads.y = 1;
@@ -590,7 +381,7 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 			kaisaiMatrixComputation<32> << <grid, threads >> >(d_kasaiMatrix, d_distanceMatrix);
 		}
 		cudaThreadSynchronize();// 同步函数
-		
+		//printD(d_kasaiMatrix, mem_sizeTransportMatrix / 4);
 /*
 		/// 测试是否正确	
 		
@@ -633,7 +424,8 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 				}
 				cudaThreadSynchronize();// 同步函数
 				//显示测试
-				//printD(d_kasaiV, size_samplingPoint);
+			//	printD(d_kasaiV, size_samplingPoint);
+
 /*
 				// 检查正确性
 	
@@ -711,7 +503,6 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 				compt++;
 				//显示测试
 				//printD(d_V, size_originalPoint);
-				//writeD(d_V, 256, 0);
 			}
 			//还是计算K'*u，因为u更新了，所以需要重新计算
 			//stat = cublasSgemv(handle, CUBLAS_OP_N, size_originalPoint, size_samplingPoint, &alpha, d_kasaiMatrix, size_originalPoint, d_U, 1, &beta, d_kasaiV, 1);
@@ -749,14 +540,13 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 			//stat = cublasSnrm2(handle, size_originalPoint, d_tempVectorStopCri, 1, stop_valueU);
 			stat = cublasSnrm2(handle, size_samplingPoint, d_tempVectorStopCri, 1, stop_valueU);
 			cudaThreadSynchronize();// 同步函数
-			printf("stop_valueU: %f \n", *stop_valueU);
+		//	printf("stop_valueU: %f \n", *stop_valueU);
+
 			if (*stop_valueU < tolerance || std::isnan(*stop_valueU))
 				break;
 			/*diff_stopValueU = abs(stop_valueZero - *stop_valueU);
 			stop_valueZero = *stop_valueU;
 			 diff_stopValueU);*/
-			
-
 	}
 
 /*
@@ -1038,10 +828,22 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 		
 		cublasSdot(handle, size_transportMatrix, d_distanceMatrix, 1, d_transportPlan, 1, transportCost);
 		cudaThreadSynchronize();// 同步函数
-		printf("传输代价： %f\n", *transportCost);
+		//printf("传输代价： %f\n", *transportCost);
+
 		*stop_valueX =*preTransportCost - *transportCost;
 		*preTransportCost = *transportCost;
+		if (stop_valueX <= 0)
+			break;
+		
 }
+
+	//统计时间
+	cudaEventRecord(stop, 0);
+	cudaEventSynchronize(stop);
+	cudaEventElapsedTime(&time, start, stop);
+	cudaEventDestroy(start);
+	cudaEventDestroy(stop);
+	
 
 	/// 输出最后的点
 	float *h_samplPointCoordinate = (float *)malloc(mem_sizeA);
@@ -1053,7 +855,7 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 
 	//输出最后的坐标
 	printH(h_samplPointCoordinate, size_A);
-	writeD(d_A, size_A,0);
+	writeResult(d_A, size_A,0);
 	// CUBLAS handle
 
 	stat = cublasDestroy(handle);
@@ -1061,9 +863,9 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 		printf("cublasDestroy failed\n");
 		exit(EXIT_FAILURE);
 	}
-
+	std::cout << "所花时间为：" << time / CLOCKS_PER_SEC << std::endl;
 	// Record the stop event
-	error = cudaEventRecord(stop, NULL);
+	/*error = cudaEventRecord(stop, NULL);
 	if (error != cudaSuccess){
 		fprintf(stderr, " Failed to record stop event ( error code %s)! \n", cudaGetErrorString(error));
 	}
@@ -1083,7 +885,7 @@ int distanceCompuation(int block_size, dim3 &dimsA, dim3 &dimsB, float *matrix_A
 		fprintf(stderr, "Failed to get time elapsed between events (error code %s)!\n", cudaGetErrorString(error));
 		exit(EXIT_FAILURE);
 	}
-
+	*/
 	/*	for (int i = 0; i < dimsA.x; i++){
 	for (int j = 0; j < dimsA.y; j++){
 	printf("%f  ", h_A[j*dimsA.x + i]);
